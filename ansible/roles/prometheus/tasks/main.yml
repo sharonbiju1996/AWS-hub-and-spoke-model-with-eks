@@ -1,0 +1,99 @@
+---
+- name: Create prometheus group
+  group:
+    name: "{{ prometheus_group }}"
+    system: yes
+
+- name: Create prometheus user
+  user:
+    name: "{{ prometheus_user }}"
+    group: "{{ prometheus_group }}"
+    system: yes
+    shell: /bin/false
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ prometheus_user }}"
+    group: "{{ prometheus_group }}"
+    mode: '0755'
+  loop:
+    - "{{ prometheus_config_dir }}"
+    - "{{ prometheus_config_dir }}/rules"
+    - "{{ prometheus_data_dir }}"
+
+- name: Check if prometheus exists
+  stat:
+    path: /usr/local/bin/prometheus
+  register: prometheus_binary
+
+- name: Download prometheus
+  get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+    dest: /tmp/prometheus.tar.gz
+  when: not prometheus_binary.stat.exists
+
+- name: Extract prometheus
+  unarchive:
+    src: /tmp/prometheus.tar.gz
+    dest: /tmp
+    remote_src: yes
+  when: not prometheus_binary.stat.exists
+
+- name: Install prometheus binaries
+  copy:
+    src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+    dest: /usr/local/bin/
+    remote_src: yes
+    mode: '0755'
+  loop:
+    - prometheus
+    - promtool
+  when: not prometheus_binary.stat.exists
+  notify: restart prometheus
+
+- name: Deploy prometheus config
+  template:
+    src: prometheus.yml.j2
+    dest: "{{ prometheus_config_dir }}/prometheus.yml"
+    owner: "{{ prometheus_user }}"
+    group: "{{ prometheus_group }}"
+  notify: reload prometheus
+
+- name: Deploy alert rules
+  template:
+    src: alert_rules.yml.j2
+    dest: "{{ prometheus_config_dir }}/rules/alert_rules.yml"
+    owner: "{{ prometheus_user }}"
+    group: "{{ prometheus_group }}"
+  notify: reload prometheus
+
+- name: Deploy systemd service
+  template:
+    src: prometheus.service.j2
+    dest: /etc/systemd/system/prometheus.service
+  notify:
+    - reload systemd
+    - restart prometheus
+
+- name: Start prometheus
+  systemd:
+    name: prometheus
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Wait for prometheus
+  wait_for:
+    port: "{{ prometheus_port }}"
+    delay: 5
+    timeout: 60
+
+- name: Cleanup
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/prometheus.tar.gz
+    - "/tmp/prometheus-{{ prometheus_version }}.linux-amd64"

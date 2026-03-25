@@ -1,0 +1,69 @@
+---
+- name: Add Grafana GPG key
+  apt_key:
+    url: https://apt.grafana.com/gpg.key
+    state: present
+
+- name: Add Grafana repository
+  apt_repository:
+    repo: "deb https://apt.grafana.com stable main"
+    state: present
+    filename: grafana
+
+- name: Install Grafana
+  apt:
+    name: "grafana={{ grafana_version }}"
+    state: present
+    update_cache: yes
+  notify: restart grafana
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ grafana_user }}"
+    group: "{{ grafana_group }}"
+    mode: '0755'
+  loop:
+    - "{{ grafana_data_dir }}"
+    - "{{ grafana_log_dir }}"
+    - "{{ grafana_config_dir }}/provisioning/datasources"
+    - "{{ grafana_config_dir }}/provisioning/dashboards"
+    - "{{ grafana_data_dir }}/dashboards"
+
+- name: Deploy grafana config
+  template:
+    src: grafana.ini.j2
+    dest: "{{ grafana_config_dir }}/grafana.ini"
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: '0640'
+  notify: restart grafana
+
+- name: Deploy datasources
+  template:
+    src: datasources.yml.j2
+    dest: "{{ grafana_config_dir }}/provisioning/datasources/datasources.yml"
+    owner: root
+    group: "{{ grafana_group }}"
+  notify: restart grafana
+
+- name: Deploy dashboard provisioning
+  template:
+    src: dashboards.yml.j2
+    dest: "{{ grafana_config_dir }}/provisioning/dashboards/dashboards.yml"
+    owner: root
+    group: "{{ grafana_group }}"
+  notify: restart grafana
+
+- name: Start Grafana
+  systemd:
+    name: grafana-server
+    enabled: yes
+    state: started
+
+- name: Wait for Grafana
+  wait_for:
+    port: "{{ grafana_port }}"
+    delay: 5
+    timeout: 60

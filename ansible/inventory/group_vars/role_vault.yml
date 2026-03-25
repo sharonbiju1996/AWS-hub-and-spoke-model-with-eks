@@ -1,0 +1,22 @@
+---
+# ========================================
+# Vault (Shared VPC)
+# ========================================
+vault_version: "1.15.4"
+vault_user: "vault"
+vault_group: "vault"
+vault_config_dir: "/etc/vault.d"
+vault_data_dir: "/opt/vault/data"
+vault_log_dir: "/var/log/vault"
+vault_tls_dir: "/etc/vault.d/tls"
+vault_api_port: 8200
+vault_cluster_port: 8201
+vault_cluster_name: "vault-ha-cluster"
+vault_tls_enabled: false
+
+# AWS - FIXED table name (capital S in Shared)
+vault_kms_key_id: "43716947-5c3a-4187-b6a5-93fa508acc6f"
+vault_dynamodb_table: "jc-Shared-vault-storage"
+
+vault_telemetry_enabled: true
+vault_prometheus_retention: "30s"

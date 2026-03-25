@@ -1,0 +1,17 @@
+---
+- name: Deploy EKS Monitoring
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  become: no
+
+  vars_files:
+    - "../vars/environments/{{ env | default('dev') }}.yml"
+
+  pre_tasks:
+    - name: Display environment
+      debug:
+        msg: "Deploying to: {{ env }}"
+
+  roles:
+    - eks_monitoring

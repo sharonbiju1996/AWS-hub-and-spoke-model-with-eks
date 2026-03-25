@@ -1,0 +1,720 @@
+trigger:
+- main
+
+pool:
+  name: 'Default'
+
+parameters:
+  - name: runHub
+    displayName: 'Run Hub stages?'
+    type: boolean
+    default: false
+
+  - name: runShared
+    displayName: 'Run Shared stages?'
+    type: boolean
+    default: false
+
+  - name: runSpoke
+    displayName: 'Run Spoke stages?'
+    type: boolean
+    default: false
+
+  - name: spokeEnv
+    displayName: 'Spoke environment to deploy'
+    type: string
+    default: dev
+    values:
+      - dev
+      - uat
+      - prod
+
+variables:
+  - group: jc-devops-vars
+
+stages:
+#=====================
+# 1) PLAN HUB
+#=====================
+- stage: terraform_plan_hub
+  displayName: 'Plan Hub'
+  dependsOn: []
+  condition: and(always(), eq('${{ parameters.runHub }}', 'true'))
+  jobs:
+  - job: tf_plan_hub
+    displayName: 'TF Plan Hub'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: AWSShellScript@1
+      displayName: 'TF Init & Plan (hub)'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: 'us-west-2'
+        scriptType: 'inline'
+        inlineScript: |
+          set -ex
+          cd $(System.DefaultWorkingDirectory)/root-hub
+          
+          which unzip || sudo apt-get update && sudo apt-get install -y unzip
+          
+          curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+          unzip -o terraform.zip
+          chmod +x terraform
+          export PATH=$PWD:$PATH
+          
+          terraform init -no-color \
+            -backend-config="bucket=terraform-state-bucket-jc51" \
+            -backend-config="key=hub/terraform.tfstate" \
+            -backend-config="region=us-west-2"
+          
+          terraform workspace select "default"
+          terraform plan -out "default.tfplan" -parallelism=25
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish TF Plan'
+      inputs:
+        ArtifactName: 'hub-tfplan'
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/root-hub/default.tfplan'
+
+#=====================
+# 2) DEPLOY HUB
+#=====================
+- stage: deploy_hub
+  displayName: 'Deploy Hub'
+  dependsOn: terraform_plan_hub
+  condition: and(succeeded(), eq('${{ parameters.runHub }}', 'true'))
+  jobs:
+  - deployment: tf_deploy_hub
+    displayName: 'TF Deploy Hub'
+    environment: 'jc-infra-deploy'
+    timeoutInMinutes: 120
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download TF Plan'
+            inputs:
+              artifactName: 'hub-tfplan'
+              targetPath: '$(System.DefaultWorkingDirectory)/root-hub'
+
+          - task: AWSShellScript@1
+            displayName: 'TF Apply (hub)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                cd $(System.DefaultWorkingDirectory)/root-hub
+                
+                which unzip || sudo apt-get update && sudo apt-get install -y unzip
+                
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                unzip -o terraform.zip
+                chmod +x terraform
+                export PATH=$PWD:$PATH
+                
+                terraform init -no-color \
+                  -backend-config="bucket=terraform-state-bucket-jc51" \
+                  -backend-config="key=hub/terraform.tfstate" \
+                  -backend-config="region=us-west-2"
+                
+                terraform workspace select "default"
+                terraform apply "default.tfplan"
+
+          # =====================
+          # ANSIBLE - MONITORING (via SSM)
+          # =====================
+          - task: AWSShellScript@1
+            displayName: 'Ansible - Setup Monitoring (SSM)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                
+                # Install dependencies
+                sudo apt-get update
+                sudo apt-get remove -y ansible || true
+                sudo apt-get install -y python3-pip unzip
+                
+                # Install Ansible via pip
+                pip3 install --upgrade ansible-core ansible --break-system-packages
+                export PATH="$HOME/.local/bin:$PATH"
+                
+                ansible --version
+                
+                # Install boto3 for AWS dynamic inventory and SSM
+                pip3 install boto3 botocore --break-system-packages
+                
+                # Install AWS SSM Session Manager Plugin
+                curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+                sudo dpkg -i session-manager-plugin.deb
+                session-manager-plugin --version
+                
+                # Install Ansible AWS collection
+                ansible-galaxy collection install amazon.aws:==7.0.0 community.general:==8.0.0 --force
+                
+                # Go to ansible directory
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Fix ansible.cfg callback plugin issue
+                if [ -f "ansible.cfg" ]; then
+                  sed -i 's/stdout_callback.*=.*yaml/stdout_callback = default/g' ansible.cfg
+                  sed -i 's/stdout_callback.*=.*community.general.yaml/stdout_callback = default/g' ansible.cfg
+                fi
+                
+                # Install requirements if exists
+                if [ -f "requirements.yml" ]; then
+                  ansible-galaxy install -r requirements.yml --force
+                fi
+                
+                # Wait for instances to be SSM-ready
+                echo "Waiting 60s for SSM agent registration..."
+                sleep 60
+                
+                # Verify inventory
+                echo "Testing AWS EC2 dynamic inventory..."
+                ansible-inventory -i inventory/aws_ec2.yml --graph || echo "Inventory check failed, continuing..."
+                
+                # Run monitoring playbook
+                echo "Running monitoring playbook..."
+                ANSIBLE_STDOUT_CALLBACK=default ansible-playbook \
+                  -i inventory/aws_ec2.yml \
+                  playbooks/monitoring.yml \
+                  -v
+
+#=====================
+# 3) PLAN SHARED
+#=====================
+- stage: terraform_plan_shared
+  displayName: 'Plan Shared'
+  dependsOn: []
+  condition: and(always(), eq('${{ parameters.runShared }}', 'true'))
+  jobs:
+  - job: tf_plan_shared
+    displayName: 'TF Plan Shared'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: AWSShellScript@1
+      displayName: 'TF Init & Plan (shared)'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: 'us-west-2'
+        scriptType: 'inline'
+        inlineScript: |
+          set -ex
+          cd $(System.DefaultWorkingDirectory)/root-shared
+          
+          which unzip || sudo apt-get update && sudo apt-get install -y unzip
+          
+          curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+          unzip -o terraform.zip
+          chmod +x terraform
+          export PATH=$PWD:$PATH
+          
+          terraform init -no-color \
+            -backend-config="bucket=terraform-state-bucket-jc51" \
+            -backend-config="key=shared/terraform.tfstate" \
+            -backend-config="region=us-west-2" \
+            -backend-config="dynamodb_table=tf-locks"
+          
+          terraform workspace select "default"
+          terraform plan -out "default.tfplan" -parallelism=25
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish TF Plan (shared)'
+      inputs:
+        ArtifactName: 'shared-tfplan'
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/root-shared/default.tfplan'
+
+#=====================
+# 4) DEPLOY SHARED
+#=====================
+- stage: deploy_shared
+  displayName: 'Deploy Shared'
+  dependsOn: terraform_plan_shared
+  condition: and(succeeded(), eq('${{ parameters.runShared }}', 'true'))
+  jobs:
+  - deployment: tf_deploy_shared
+    displayName: 'TF Deploy Shared'
+    environment: 'jc-infra-deploy'
+    timeoutInMinutes: 120
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download TF Plan'
+            inputs:
+              artifactName: 'shared-tfplan'
+              targetPath: '$(System.DefaultWorkingDirectory)/root-shared'
+
+          - task: AWSShellScript@1
+            displayName: 'TF Apply (shared)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                cd $(System.DefaultWorkingDirectory)/root-shared
+                
+                ls -la
+                
+                which unzip || sudo apt-get update && sudo apt-get install -y unzip
+                
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                unzip -o terraform.zip
+                chmod +x terraform
+                export PATH=$PWD:$PATH
+                
+                terraform init -no-color \
+                  -backend-config="bucket=terraform-state-bucket-jc51" \
+                  -backend-config="key=shared/terraform.tfstate" \
+                  -backend-config="region=us-west-2" \
+                  -backend-config="dynamodb_table=tf-locks"
+                
+                terraform workspace select "default"
+                terraform apply "default.tfplan"
+
+          # =====================
+          # ANSIBLE - VAULT (via SSM)
+          # =====================
+          - task: AWSShellScript@1
+            displayName: 'Ansible - Setup Vault (SSM)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                
+                # Install dependencies
+                sudo apt-get update
+                sudo apt-get remove -y ansible || true
+                sudo apt-get install -y python3-pip unzip
+                
+                # Install Ansible via pip
+                pip3 install --upgrade ansible-core ansible --break-system-packages
+                export PATH="$HOME/.local/bin:$PATH"
+                
+                ansible --version
+                
+                # Install boto3 for AWS dynamic inventory and SSM
+                pip3 install boto3 botocore --break-system-packages
+                
+                # Install AWS SSM Session Manager Plugin
+                curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+                sudo dpkg -i session-manager-plugin.deb
+                session-manager-plugin --version
+                
+                # Install Ansible AWS collection
+                ansible-galaxy collection install amazon.aws:==7.0.0 community.general:==8.0.0 --force
+                
+                # Go to ansible directory
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Fix ansible.cfg callback plugin issue
+                if [ -f "ansible.cfg" ]; then
+                  sed -i 's/stdout_callback.*=.*yaml/stdout_callback = default/g' ansible.cfg
+                  sed -i 's/stdout_callback.*=.*community.general.yaml/stdout_callback = default/g' ansible.cfg
+                fi
+                
+                # Install requirements if exists
+                if [ -f "requirements.yml" ]; then
+                  ansible-galaxy install -r requirements.yml --force
+                fi
+                
+                # Wait for instances to be SSM-ready
+                echo "Waiting 60s for SSM agent registration..."
+                sleep 60
+                
+                # Verify inventory
+                echo "Testing AWS EC2 dynamic inventory..."
+                ansible-inventory -i inventory/aws_ec2.yml --graph || echo "Inventory check failed, continuing..."
+                
+                # Run Vault playbook
+                echo "Running Vault playbook..."
+                ANSIBLE_STDOUT_CALLBACK=default ansible-playbook \
+                  -i inventory/aws_ec2.yml \
+                  playbooks/vault.yml \
+                  -v
+
+          # =====================
+          # ANSIBLE - VAULT INIT (via SSM)
+          # =====================
+          - task: AWSShellScript@1
+            displayName: 'Ansible - Initialize Vault (SSM)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                
+                export PATH="$HOME/.local/bin:$PATH"
+                
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Run Vault init playbook
+                echo "Running Vault initialization playbook..."
+                ANSIBLE_STDOUT_CALLBACK=default ansible-playbook \
+                  -i inventory/aws_ec2.yml \
+                  playbooks/vault-init.yml \
+                  -v
+
+          # =====================
+          # ANSIBLE - SONARQUBE (via SSM)
+          # =====================
+          - task: AWSShellScript@1
+            displayName: 'Ansible - Setup SonarQube (SSM)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                
+                export PATH="$HOME/.local/bin:$PATH"
+                
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Run SonarQube playbook
+                echo "Running SonarQube playbook..."
+                ANSIBLE_STDOUT_CALLBACK=default ansible-playbook \
+                  -i inventory/aws_ec2.yml \
+                  playbooks/sonarqube.yml \
+                  -v
+
+#=====================
+# 5) PLAN SPOKE
+#=====================
+- stage: terraform_plan_spoke
+  displayName: 'Plan Spoke (${{ parameters.spokeEnv }})'
+  dependsOn: []
+  condition: and(always(), eq('${{ parameters.runSpoke }}', 'true'))
+  jobs:
+  - job: tf_plan_spoke
+    displayName: 'TF Plan Spoke (${{ parameters.spokeEnv }})'
+    variables:
+      env: ${{ parameters.spokeEnv }}
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: AWSShellScript@1
+      displayName: 'TF Init & Plan (spoke)'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: 'us-west-2'
+        scriptType: 'inline'
+        inlineScript: |
+          set -ex
+          cd $(System.DefaultWorkingDirectory)/root-spoke
+          
+          which unzip || sudo apt-get update && sudo apt-get install -y unzip
+          
+          curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+          unzip -o terraform.zip
+          chmod +x terraform
+          export PATH=$PWD:$PATH
+          
+          terraform init -no-color \
+            -backend-config="bucket=terraform-state-bucket-jc51" \
+            -backend-config="key=spoke/$(env)/terraform.tfstate" \
+            -backend-config="workspace_key_prefix=env:" \
+            -backend-config="region=us-west-2" \
+            -backend-config="dynamodb_table=tf-locks"
+          
+          terraform workspace select "$(env)" || terraform workspace new "$(env)"
+          
+          terraform plan \
+            -var="enable_tgw_attachment=true" \
+            -var="enable_eks=true" \
+            -var="enable_ingress_controller=true" \
+            -var="enable_apigw_vpclink=true" \
+            -out "$(env)-spoke.tfplan" \
+            -parallelism=25
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish TF Plan (spoke)'
+      inputs:
+        ArtifactName: 'spoke-${{ parameters.spokeEnv }}-tfplan'
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/root-spoke/$(env)-spoke.tfplan'
+
+#=====================
+# 6) DEPLOY SPOKE (EKS)
+#=====================
+- stage: deploy_spoke
+  displayName: 'Deploy Spoke EKS (${{ parameters.spokeEnv }})'
+  dependsOn: terraform_plan_spoke
+  condition: and(succeeded(), eq('${{ parameters.runSpoke }}', 'true'))
+  jobs:
+  - deployment: tf_deploy_spoke
+    displayName: 'TF Deploy Spoke (${{ parameters.spokeEnv }})'
+    environment: 'jc-infra-deploy'
+    timeoutInMinutes: 120
+    variables:
+      env: ${{ parameters.spokeEnv }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download TF Plan (spoke)'
+            inputs:
+              artifactName: 'spoke-${{ parameters.spokeEnv }}-tfplan'
+              targetPath: '$(System.DefaultWorkingDirectory)/root-spoke'
+
+          - task: AWSShellScript@1
+            displayName: 'TF Apply (spoke EKS)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                cd $(System.DefaultWorkingDirectory)/root-spoke
+                
+                which unzip || sudo apt-get update && sudo apt-get install -y unzip
+                
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                unzip -o terraform.zip
+                chmod +x terraform
+                export PATH=$PWD:$PATH
+                
+                terraform init -no-color \
+                  -backend-config="bucket=terraform-state-bucket-jc51" \
+                  -backend-config="key=spoke/$(env)/terraform.tfstate" \
+                  -backend-config="workspace_key_prefix=env:" \
+                  -backend-config="region=us-west-2" \
+                  -backend-config="dynamodb_table=tf-locks"
+                
+                terraform workspace select "$(env)" || terraform workspace new "$(env)"
+                terraform apply "$(env)-spoke.tfplan"
+
+          - task: AWSShellScript@1
+            displayName: 'Configure kubectl & deploy to EKS'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                cd $(System.DefaultWorkingDirectory)/root-spoke
+                
+                which unzip || sudo apt-get update && sudo apt-get install -y unzip
+                
+                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                export PATH=$PWD:$PATH
+                
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                unzip -o terraform.zip
+                chmod +x terraform
+                
+                terraform init -no-color \
+                  -backend-config="bucket=terraform-state-bucket-jc51" \
+                  -backend-config="key=spoke/$(env)/terraform.tfstate" \
+                  -backend-config="workspace_key_prefix=env:" \
+                  -backend-config="region=us-west-2" \
+                  -backend-config="dynamodb_table=tf-locks"
+                
+                terraform workspace select "$(env)"
+                
+                CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+                echo "Using EKS cluster: ${CLUSTER_NAME}"
+                
+                aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "us-west-2"
+                
+                cd $(System.DefaultWorkingDirectory)
+                if [ -f "custom-dns/ingress.yaml" ]; then
+                  ./root-spoke/kubectl apply -f custom-dns/ingress.yaml || true
+                fi
+
+#=====================
+# 7) DEPLOY SPOKE INGRESS
+#=====================
+- stage: deploy_spoke_ingress
+  displayName: 'Deploy Spoke Ingress (${{ parameters.spokeEnv }})'
+  dependsOn: deploy_spoke
+  condition: and(succeeded(), eq('${{ parameters.runSpoke }}', 'true'))
+  jobs:
+  - deployment: tf_deploy_ingress
+    displayName: 'TF Deploy Ingress (${{ parameters.spokeEnv }})'
+    environment: 'jc-infra-deploy'
+    timeoutInMinutes: 120
+    variables:
+      env: ${{ parameters.spokeEnv }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: AWSShellScript@1
+            displayName: 'TF Apply (Ingress + VPC Link)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                cd $(System.DefaultWorkingDirectory)/root-spoke
+                
+                which unzip || sudo apt-get update && sudo apt-get install -y unzip
+                
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                unzip -o terraform.zip
+                chmod +x terraform
+                export PATH=$PWD:$PATH
+                
+                terraform init -no-color \
+                  -backend-config="bucket=terraform-state-bucket-jc51" \
+                  -backend-config="key=spoke/$(env)/terraform.tfstate" \
+                  -backend-config="workspace_key_prefix=env:" \
+                  -backend-config="region=us-west-2" \
+                  -backend-config="dynamodb_table=tf-locks"
+                
+                terraform workspace select "$(env)" || terraform workspace new "$(env)"
+                
+                CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+                echo "Using EKS cluster: ${CLUSTER_NAME}"
+                
+                mkdir -p $HOME/.kube
+                aws eks update-kubeconfig \
+                  --name "${CLUSTER_NAME}" \
+                  --region "us-west-2" \
+                  --kubeconfig "$HOME/.kube/config"
+                
+                export KUBECONFIG="$HOME/.kube/config"
+                
+                terraform apply \
+                  -var="enable_tgw_attachment=true" \
+                  -var="enable_eks=true" \
+                  -var="enable_ingress_controller=true" \
+                  -var="enable_apigw_vpclink=true" \
+                  -auto-approve
+
+#=====================
+# 8) ANSIBLE EKS MONITORING
+#=====================
+- stage: ansible_eks_monitoring
+  displayName: 'Ansible EKS Monitoring (${{ parameters.spokeEnv }})'
+  dependsOn: deploy_spoke_ingress
+  condition: and(succeeded(), eq('${{ parameters.runSpoke }}', 'true'))
+  jobs:
+  - deployment: ansible_eks_monitoring
+    displayName: 'Ansible Deploy EKS Monitoring (${{ parameters.spokeEnv }})'
+    environment: 'jc-infra-deploy'
+    timeoutInMinutes: 60
+    variables:
+      env: ${{ parameters.spokeEnv }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: AWSShellScript@1
+            displayName: 'Ansible - Deploy EKS Monitoring Stack'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: 'us-west-2'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                
+                # Install dependencies
+                sudo apt-get update
+                sudo apt-get remove -y ansible || true
+                sudo apt-get install -y python3-pip unzip
+                
+                # Install Ansible via pip
+                pip3 install --upgrade ansible-core ansible --break-system-packages
+                export PATH="$HOME/.local/bin:$PATH"
+                
+                ansible --version
+                
+                # Install Python packages for Kubernetes
+                pip3 install boto3 botocore kubernetes openshift --break-system-packages
+                
+                # Install kubectl
+                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                sudo mv kubectl /usr/local/bin/
+                
+                # Install Helm
+                curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                
+                # Install Ansible collections
+                ansible-galaxy collection install amazon.aws:==7.0.0 community.general:==8.0.0 kubernetes.core:==3.0.0 --force
+                
+                # Go to ansible directory
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Fix ansible.cfg callback plugin issue
+                if [ -f "ansible.cfg" ]; then
+                  sed -i 's/stdout_callback.*=.*yaml/stdout_callback = default/g' ansible.cfg
+                  sed -i 's/stdout_callback.*=.*community.general.yaml/stdout_callback = default/g' ansible.cfg
+                fi
+                
+                # Install requirements if exists
+                if [ -f "requirements.yml" ]; then
+                  ansible-galaxy install -r requirements.yml --force
+                fi
+                
+                # Get EKS cluster name from Terraform output
+                cd $(System.DefaultWorkingDirectory)/root-spoke
+                
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                unzip -o terraform.zip
+                chmod +x terraform
+                export PATH=$PWD:$PATH
+                
+                terraform init -no-color \
+                  -backend-config="bucket=terraform-state-bucket-jc51" \
+                  -backend-config="key=spoke/$(env)/terraform.tfstate" \
+                  -backend-config="workspace_key_prefix=env:" \
+                  -backend-config="region=us-west-2" \
+                  -backend-config="dynamodb_table=tf-locks"
+                
+                terraform workspace select "$(env)"
+                
+                CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+                echo "Using EKS cluster: ${CLUSTER_NAME}"
+                
+                # Configure kubectl
+                aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "us-west-2"
+                
+                # Verify kubectl connection
+                kubectl get nodes
+                
+                # Go back to ansible directory
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Run EKS monitoring playbook
+                echo "Running EKS monitoring playbook for $(env)..."
+                ANSIBLE_STDOUT_CALLBACK=default ansible-playbook \
+                  playbooks/eks-monitoring.yml \
+                  -e "env=$(env)" \
+                  -e "eks_cluster_name=${CLUSTER_NAME}" \
+                  -v

@@ -1,0 +1,23 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-west-2
+filters:
+  instance-state-name: running
+keyed_groups:
+  # Group by Role tag
+  - key: tags.Role
+    prefix: role
+  # Group by Stack tag
+  - key: tags.Stack
+    prefix: stack
+  # Group by Environment tag
+  - key: tags.Environment
+    prefix: env
+hostnames:
+  - instance-id
+compose:
+  ansible_host: instance_id
+  ansible_connection: "'aws_ssm'"
+  ansible_aws_ssm_region: "'us-west-2'"
+  ansible_aws_ssm_bucket_name: "'sharon-ansible-ssm-bucket'"
+  ansible_remote_tmp: "'/tmp/.ansible-${USER}/tmp'"

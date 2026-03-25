@@ -1,0 +1,10 @@
+---
+env: dev
+eks_cluster_name: jc-dev-eks-dev
+
+hub_monitoring_ip: "10.58.21.62"
+hub_jaeger_endpoint: "{{ hub_monitoring_ip }}:4317"
+
+node_exporter_enabled: true
+kube_state_metrics_enabled: true
+otel_collector_enabled: true

@@ -1,0 +1,33 @@
+variable "attachment_id" {
+  type = string
+}
+
+variable "associate_route_table_id" {
+  type = string
+}
+
+variable "propagate_route_table_ids" {
+  type    = list(string)
+  default = []
+}
+
+# Optional: create a static route in SOME RT (ex: spoke RT) to reach this VPC CIDR
+variable "create_route" {
+  type    = bool
+  default = false
+}
+
+variable "route_table_id_for_route" {
+  type    = string
+  default = null
+}
+
+variable "destination_cidr_block" {
+  type    = string
+  default = null
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {}
+}

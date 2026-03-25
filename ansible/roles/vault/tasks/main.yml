@@ -1,0 +1,90 @@
+---
+- name: Create vault group
+  group:
+    name: "{{ vault_group }}"
+    system: yes
+
+- name: Create vault user
+  user:
+    name: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    system: yes
+    shell: /bin/false
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: '0750'
+  loop:
+    - "{{ vault_config_dir }}"
+    - "{{ vault_data_dir }}"
+    - "{{ vault_log_dir }}"
+
+- name: Check if vault exists
+  stat:
+    path: /usr/local/bin/vault
+  register: vault_binary
+
+- name: Download vault
+  get_url:
+    url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+    dest: /tmp/vault.zip
+  when: not vault_binary.stat.exists
+
+- name: Extract vault
+  unarchive:
+    src: /tmp/vault.zip
+    dest: /usr/local/bin
+    remote_src: yes
+  when: not vault_binary.stat.exists
+  notify: restart vault
+
+- name: Set capabilities
+  capabilities:
+    path: /usr/local/bin/vault
+    capability: cap_ipc_lock+ep
+    state: present
+
+- name: Deploy config
+  template:
+    src: vault.hcl.j2
+    dest: "{{ vault_config_dir }}/vault.hcl"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: '0640'
+  notify: restart vault
+
+- name: Deploy environment
+  template:
+    src: vault.env.j2
+    dest: /etc/profile.d/vault.sh
+    mode: '0644'
+
+- name: Deploy systemd service
+  template:
+    src: vault.service.j2
+    dest: /etc/systemd/system/vault.service
+  notify:
+    - reload systemd
+    - restart vault
+
+- name: Start vault
+  systemd:
+    name: vault
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Wait for vault
+  wait_for:
+    port: "{{ vault_api_port }}"
+    delay: 5
+    timeout: 60
+
+- name: Cleanup
+  file:
+    path: /tmp/vault.zip
+    state: absent

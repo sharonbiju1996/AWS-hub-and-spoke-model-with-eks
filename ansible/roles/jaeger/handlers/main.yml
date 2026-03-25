@@ -1,0 +1,9 @@
+---
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: restart jaeger
+  systemd:
+    name: jaeger
+    state: restarted

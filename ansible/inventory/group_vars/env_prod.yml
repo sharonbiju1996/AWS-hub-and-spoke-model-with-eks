@@ -1,0 +1,18 @@
+---
+# ========================================
+# Prod Environment
+# ========================================
+eks_cluster_name: "jc-prod-eks"
+eks_environment: "prod"
+prometheus_federation_name: "eks-prod"
+
+jaeger_collector_endpoint: "{{ jaeger_hub_ip }}:14250"
+jaeger_otlp_endpoint: "{{ jaeger_hub_ip }}:4317"
+
+# Sampling - 10% in prod (high traffic)
+otel_sampling_rate: 0.1
+
+prometheus_memory_request: "1Gi"
+prometheus_memory_limit: "4Gi"
+prometheus_cpu_request: "500m"
+prometheus_cpu_limit: "2"

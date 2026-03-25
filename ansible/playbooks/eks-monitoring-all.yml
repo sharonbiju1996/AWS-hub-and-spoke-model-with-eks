@@ -1,0 +1,11 @@
+---
+- name: Deploy EKS Monitoring (All Environments)
+  hosts: role_eks
+  become: yes
+  roles:
+    - eks_monitoring
+
+  post_tasks:
+    - name: Display info
+      debug:
+        msg: "EKS {{ eks_environment }} monitoring deployed"

@@ -1,0 +1,39 @@
+# Environment: {{ env }}
+
+prometheus:
+  prometheusSpec:
+    retention: {{ prometheus_retention | default('15d') }}
+    replicas: {{ prometheus_replicas | default(1) }}
+    resources:
+      requests:
+        memory: {{ prometheus_memory_request | default('512Mi') }}
+        cpu: {{ prometheus_cpu_request | default('250m') }}
+      limits:
+        memory: {{ prometheus_memory_limit | default('2Gi') }}
+        cpu: {{ prometheus_cpu_limit | default('1000m') }}
+{% if prometheus_remote_write_enabled | default(false) %}
+    remoteWrite:
+      - url: {{ prometheus_remote_write_url }}
+{% endif %}
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+grafana:
+  enabled: true
+  adminPassword: {{ grafana_admin_password | default('admin123') }}
+  service:
+    type: {{ grafana_service_type | default('ClusterIP') }}
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    replicas: {{ alertmanager_replicas | default(1) }}
+
+kubeStateMetrics:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+commonLabels:
+  environment: {{ env }}

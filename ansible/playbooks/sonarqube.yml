@@ -1,0 +1,13 @@
+---
+- name: Deploy SonarQube (Shared)
+  hosts: role_sonarqube
+  become: yes
+  roles:
+    - common
+    - node_exporter
+    - sonarqube
+
+  post_tasks:
+    - name: Display URL
+      debug:
+        msg: "SonarQube: http://{{ ansible_host }}:{{ sonarqube_web_port }}"

@@ -1,0 +1,43 @@
+---
+# ========================================
+# Common Variables (All Servers)
+# ========================================
+aws_region: "us-west-2"
+
+common_packages:
+  - curl
+  - wget
+  - unzip
+  - jq
+  - htop
+  - vim
+  - net-tools
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - apt-transport-https
+  - software-properties-common
+
+# ========================================
+# Node Exporter (All EC2)
+# ========================================
+node_exporter_version: "1.7.0"
+node_exporter_port: 9100
+
+# ========================================
+# Network CIDRs
+# ========================================
+hub_vpc_cidr: "10.58.0.0/16"
+spoke_dev_vpc_cidr: "10.59.0.0/16"
+spoke_uat_vpc_cidr: "10.60.0.0/16"
+spoke_prod_vpc_cidr: "10.61.0.0/16"
+shared_vpc_cidr: "10.62.0.0/16"
+build_vpc_cidr: "10.63.0.0/16"
+
+# ========================================
+# Hub Monitoring Endpoints
+# UPDATE THESE AFTER HUB DEPLOYMENT
+# ========================================
+prometheus_hub_ip: "10.58.x.x"
+jaeger_hub_ip: "10.58.x.x"
+grafana_hub_ip: "10.58.x.x"

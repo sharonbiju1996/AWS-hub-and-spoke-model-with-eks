@@ -1,0 +1,99 @@
+- name: Install packages
+  yum:
+    name:
+      - git
+      - jq
+      - unzip
+      - tar
+      - curl
+      - awscli
+    state: present
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/azdo
+    - /opt/azdo/agent
+
+# Download ADO agent binaries into AMI (but DO NOT configure/register!)
+- name: Download Azure DevOps agent
+  get_url:
+    url: "https://vstsagentpackage.azureedge.net/agent/{{ azdo_agent_version }}/vsts-agent-linux-x64-{{ azdo_agent_version }}.tar.gz"
+    dest: /opt/azdo/agent/agent.tar.gz
+    mode: "0644"
+
+- name: Extract Azure DevOps agent
+  unarchive:
+    src: /opt/azdo/agent/agent.tar.gz
+    dest: /opt/azdo/agent
+    remote_src: yes
+  args:
+    creates: /opt/azdo/agent/config.sh
+
+- name: Install bootstrap script
+  copy:
+    dest: /opt/azdo/bootstrap.sh
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      STATE_FILE="/opt/azdo/.configured"
+      if [ -f "$STATE_FILE" ]; then
+        exit 0
+      fi
+
+      # Read config file written by user_data
+      source /etc/azdo-agent.env
+
+      # Fetch PAT from Secrets Manager
+      PAT=$(aws secretsmanager get-secret-value \
+        --region "${AWS_REGION}" \
+        --secret-id "${ADO_PAT_SECRET_NAME}" \
+        --query SecretString --output text)
+
+      cd /opt/azdo/agent
+
+      # Configure agent (unattended)
+      ./config.sh --unattended \
+        --url "${ADO_ORG_URL}" \
+        --auth pat \
+        --token "${PAT}" \
+        --pool "${ADO_POOL}" \
+        --agent "${ADO_AGENT_NAME}" \
+        --work "_work" \
+        --acceptTeeEula \
+        --replace
+
+      # Install and start service
+      ./svc.sh install
+      ./svc.sh start
+
+      touch "$STATE_FILE"
+
+- name: Install systemd service
+  copy:
+    dest: /etc/systemd/system/azdo-agent-bootstrap.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Azure DevOps Agent Bootstrap
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/azdo/bootstrap.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable bootstrap service
+  systemd:
+    name: azdo-agent-bootstrap.service
+    enabled: yes
+

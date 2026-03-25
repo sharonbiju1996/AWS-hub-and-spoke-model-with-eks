@@ -1,0 +1,166 @@
+---
+# ========================================
+# Verify kubectl access
+# ========================================
+- name: Verify kubectl access
+  command: kubectl get nodes
+  register: kubectl_nodes
+  changed_when: false
+
+- name: Display nodes
+  debug:
+    var: kubectl_nodes.stdout_lines
+
+# ========================================
+# Create namespace
+# ========================================
+- name: Create monitoring namespace
+  command: kubectl create namespace monitoring
+  register: ns_create
+  changed_when: "'created' in ns_create.stdout"
+  failed_when: false
+
+# ========================================
+# Add Helm repos
+# ========================================
+- name: Add prometheus-community repo
+  command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --timeout 5m
+  register: helm_add_prom
+  changed_when: "'has been added' in helm_add_prom.stdout"
+  failed_when: false
+
+- name: Add open-telemetry repo
+  command: helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts --timeout 5m
+  register: helm_add_otel
+  changed_when: "'has been added' in helm_add_otel.stdout"
+  failed_when: false
+
+- name: Update helm repos
+  command: helm repo update --timeout 5m
+  changed_when: false
+
+# ========================================
+# Deploy Node Exporter
+# ========================================
+- name: Deploy node-exporter
+  command: >
+    helm upgrade --install node-exporter
+    prometheus-community/prometheus-node-exporter
+    --namespace monitoring
+    --set service.type=ClusterIP
+    --timeout 15m
+  register: helm_node_exporter
+  when: node_exporter_enabled | default(true)
+  retries: 2
+  delay: 30
+  until: helm_node_exporter.rc == 0
+
+# ========================================
+# Deploy Kube State Metrics
+# ========================================
+- name: Deploy kube-state-metrics
+  command: >
+    helm upgrade --install kube-state-metrics
+    prometheus-community/kube-state-metrics
+    --namespace monitoring
+    --timeout 15m
+  register: helm_kube_state
+  when: kube_state_metrics_enabled | default(true)
+  retries: 2
+  delay: 30
+  until: helm_kube_state.rc == 0
+
+# ========================================
+# Deploy OTEL Collector
+# ========================================
+- name: Generate otel-collector values
+  template:
+    src: otel-collector-values.yml.j2
+    dest: /tmp/otel-collector-values.yml
+  when: otel_collector_enabled | default(true)
+
+- name: Deploy otel-collector
+  command: >
+    helm upgrade --install {{ otel_collector_release_name | default('otel-collector') }}
+    open-telemetry/opentelemetry-collector
+    --namespace monitoring
+    --version {{ otel_collector_version | default('0.88.0') }}
+    -f /tmp/otel-collector-values.yml
+    --timeout 15m
+  register: helm_otel
+  when: otel_collector_enabled | default(true)
+  retries: 2
+  delay: 30
+  until: helm_otel.rc == 0
+
+# ========================================
+# Wait for pods
+# ========================================
+- name: Wait for pods to start
+  pause:
+    seconds: 30
+
+- name: Wait for node-exporter pods
+  command: kubectl rollout status daemonset/node-exporter-prometheus-node-exporter -n monitoring --timeout=300s
+  failed_when: false
+  changed_when: false
+  when: node_exporter_enabled | default(true)
+
+- name: Wait for kube-state-metrics pods
+  command: kubectl rollout status deployment/kube-state-metrics -n monitoring --timeout=300s
+  failed_when: false
+  changed_when: false
+  when: kube_state_metrics_enabled | default(true)
+
+# ========================================
+# Verify deployments
+# ========================================
+- name: Get all pods in monitoring namespace
+  command: kubectl get pods -n monitoring -o wide
+  register: monitoring_pods
+  changed_when: false
+
+- name: Display monitoring pods
+  debug:
+    var: monitoring_pods.stdout_lines
+
+- name: Get services
+  command: kubectl get svc -n monitoring
+  register: monitoring_svc
+  changed_when: false
+
+- name: Display services
+  debug:
+    var: monitoring_svc.stdout_lines
+
+# ========================================
+# Display info
+# ========================================
+- name: Display info
+  debug:
+    msg:
+      - "============================================"
+      - "EKS Monitoring Deployed - {{ env }}"
+      - "============================================"
+      - "Components:"
+      - "  - Node Exporter (node metrics)"
+      - "  - Kube State Metrics (k8s metrics)"
+      - "  - OTEL Collector (traces → Hub)"
+      - ""
+      - "Send traces to:"
+      - "  otel-collector.monitoring:4317 (gRPC)"
+      - "  otel-collector.monitoring:4318 (HTTP)"
+      - ""
+      - "OTEL Metrics:"
+      - "  otel-collector.monitoring:8888/metrics"
+      - ""
+      - "Hub Grafana: http://{{ hub_monitoring_ip }}:3000"
+      - "============================================"
+
+# ========================================
+# Cleanup
+# ========================================
+- name: Cleanup temp files
+  file:
+    path: /tmp/otel-collector-values.yml
+    state: absent

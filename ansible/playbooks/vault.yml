@@ -1,0 +1,22 @@
+---
+- name: Deploy Vault HA Cluster (Shared)
+  hosts: role_vault
+  become: yes
+  roles:
+    - common
+    - node_exporter
+    - vault
+
+  post_tasks:
+    - name: Check vault status
+      command: vault status -format=json
+      register: vault_status
+      changed_when: false
+      failed_when: false
+      environment:
+        VAULT_ADDR: "http://127.0.0.1:{{ vault_api_port }}"
+
+    - name: Display status
+      debug:
+        msg: "Vault - Initialized: {{ (vault_status.stdout | from_json).initialized | default('unknown') }}, Sealed: {{ (vault_status.stdout | from_json).sealed | default('unknown') }}"
+      when: vault_status.rc in [0, 2]

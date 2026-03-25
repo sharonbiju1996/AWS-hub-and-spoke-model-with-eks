@@ -1,0 +1,16 @@
+[Unit]
+Description=Jaeger All-in-One
+After=network.target
+
+[Service]
+Type=simple
+User={{ jaeger_user }}
+Group={{ jaeger_group }}
+Environment="SPAN_STORAGE_TYPE=memory"
+ExecStart=/usr/local/bin/jaeger-all-in-one
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

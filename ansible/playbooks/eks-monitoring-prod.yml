@@ -1,0 +1,11 @@
+---
+- name: Deploy EKS Monitoring (Prod)
+  hosts: role_eks:&env_prod
+  become: yes
+  roles:
+    - eks_monitoring
+
+  post_tasks:
+    - name: Display info
+      debug:
+        msg: "EKS Prod monitoring deployed - Traces going to {{ jaeger_collector_endpoint }}"

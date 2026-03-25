@@ -1,0 +1,26 @@
+---
+# ========================================
+# SonarQube (Shared VPC)
+# ========================================
+sonarqube_version: "10.3.0.82913"
+sonarqube_user: "sonarqube"
+sonarqube_group: "sonarqube"
+
+sonarqube_home: "/opt/sonarqube"
+sonarqube_data_dir: "/opt/sonarqube/data"
+sonarqube_log_dir: "/opt/sonarqube/logs"
+sonarqube_temp_dir: "/opt/sonarqube/temp"
+
+sonarqube_web_port: 9000
+sonarqube_web_host: "0.0.0.0"
+
+sonarqube_java_version: "17"
+sonarqube_java_heap_min: "2g"
+sonarqube_java_heap_max: "2g"
+
+# Database - UPDATE FROM TERRAFORM OUTPUT
+sonarqube_db_host: "localhost"
+sonarqube_db_port: 5432
+sonarqube_db_name: "sonarqube"
+sonarqube_db_user: "sonarqube"
+sonarqube_db_password: "SonarQube@2024!"

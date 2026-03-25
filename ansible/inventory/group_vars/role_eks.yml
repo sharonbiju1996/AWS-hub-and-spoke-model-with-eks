@@ -1,0 +1,12 @@
+---
+# ========================================
+# EKS Common Config (All Environments)
+# ========================================
+helm_version: "3.13.3"
+kubectl_version: "1.28.4"
+
+kube_prometheus_version: "55.5.0"
+kube_prometheus_namespace: "monitoring"
+
+otel_collector_version: "0.73.1"
+otel_collector_namespace: "monitoring"

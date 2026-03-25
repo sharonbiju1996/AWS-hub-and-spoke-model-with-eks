@@ -1,0 +1,50 @@
+{
+    "Certificate": {
+        "CertificateArn": "arn:aws:acm:us-west-2:289880680686:certificate/101ccb5b-a014-46e7-96e7-e88127cbf894",
+        "DomainName": "idukkiflavours.shop",
+        "SubjectAlternativeNames": [
+            "idukkiflavours.shop",
+            "*.idukkiflavours.shop"
+        ],
+        "DomainValidationOptions": [
+            {
+                "DomainName": "idukkiflavours.shop"
+            },
+            {
+                "DomainName": "*.idukkiflavours.shop"
+            }
+        ],
+        "Serial": "05:44:bf:87:35:a4:da:16:1a:59:68:50:ec:e3:10:59:fa:b2",
+        "Subject": "CN=idukkiflavours.shop",
+        "Issuer": "Let's Encrypt",
+        "CreatedAt": "2025-12-28T11:16:50.438000+05:30",
+        "ImportedAt": "2025-12-28T11:16:50.439000+05:30",
+        "Status": "ISSUED",
+        "NotBefore": "2025-12-28T09:54:45+05:30",
+        "NotAfter": "2026-03-28T09:54:44+05:30",
+        "KeyAlgorithm": "EC-prime256v1",
+        "SignatureAlgorithm": "SHA384WITHECDSA",
+        "InUseBy": [],
+        "Type": "IMPORTED",
+        "KeyUsages": [
+            {
+                "Name": "DIGITAL_SIGNATURE"
+            }
+        ],
+        "ExtendedKeyUsages": [
+            {
+                "Name": "TLS_WEB_SERVER_AUTHENTICATION",
+                "OID": "1.3.6.1.5.5.7.3.1"
+            },
+            {
+                "Name": "TLS_WEB_CLIENT_AUTHENTICATION",
+                "OID": "1.3.6.1.5.5.7.3.2"
+            }
+        ],
+        "RenewalEligibility": "INELIGIBLE",
+        "Options": {
+            "CertificateTransparencyLoggingPreference": "DISABLED",
+            "Export": "DISABLED"
+        }
+    }
+}

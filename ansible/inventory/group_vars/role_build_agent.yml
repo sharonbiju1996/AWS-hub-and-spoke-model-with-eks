@@ -1,0 +1,6 @@
+---
+# ========================================
+# Build Agent (Build VPC)
+# ========================================
+# No additional config needed - using Packer AMI
+# Node exporter will be installed via common playbook

@@ -1,0 +1,7 @@
+---
+- name: Common setup on all servers
+  hosts: all
+  become: yes
+  roles:
+    - common
+    - node_exporter

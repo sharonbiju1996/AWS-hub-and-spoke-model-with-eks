@@ -1,0 +1,18 @@
+---
+# ========================================
+# UAT Environment
+# ========================================
+eks_cluster_name: "jc-uat-eks"
+eks_environment: "uat"
+prometheus_federation_name: "eks-uat"
+
+jaeger_collector_endpoint: "{{ jaeger_hub_ip }}:14250"
+jaeger_otlp_endpoint: "{{ jaeger_hub_ip }}:4317"
+
+# Sampling - 50% in UAT
+otel_sampling_rate: 0.5
+
+prometheus_memory_request: "512Mi"
+prometheus_memory_limit: "2Gi"
+prometheus_cpu_request: "250m"
+prometheus_cpu_limit: "1"

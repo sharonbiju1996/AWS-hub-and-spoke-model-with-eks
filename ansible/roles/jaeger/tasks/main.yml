@@ -1,0 +1,79 @@
+---
+- name: Create jaeger group
+  group:
+    name: "{{ jaeger_group }}"
+    system: yes
+
+- name: Create jaeger user
+  user:
+    name: "{{ jaeger_user }}"
+    group: "{{ jaeger_group }}"
+    system: yes
+    shell: /bin/false
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ jaeger_user }}"
+    group: "{{ jaeger_group }}"
+    mode: '0755'
+  loop:
+    - "{{ jaeger_data_dir }}"
+    - "{{ jaeger_badger_dir }}"
+
+- name: Check if jaeger exists
+  stat:
+    path: /usr/local/bin/jaeger-all-in-one
+  register: jaeger_binary
+
+- name: Download jaeger
+  get_url:
+    url: "https://github.com/jaegertracing/jaeger/releases/download/v{{ jaeger_version }}/jaeger-{{ jaeger_version }}-linux-amd64.tar.gz"
+    dest: /tmp/jaeger.tar.gz
+  when: not jaeger_binary.stat.exists
+
+- name: Extract jaeger
+  unarchive:
+    src: /tmp/jaeger.tar.gz
+    dest: /tmp
+    remote_src: yes
+  when: not jaeger_binary.stat.exists
+
+- name: Install jaeger
+  copy:
+    src: "/tmp/jaeger-{{ jaeger_version }}-linux-amd64/jaeger-all-in-one"
+    dest: /usr/local/bin/jaeger-all-in-one
+    remote_src: yes
+    mode: '0755'
+  when: not jaeger_binary.stat.exists
+  notify: restart jaeger
+
+- name: Deploy systemd service
+  template:
+    src: jaeger.service.j2
+    dest: /etc/systemd/system/jaeger.service
+  notify:
+    - reload systemd
+    - restart jaeger
+
+- name: Start jaeger
+  systemd:
+    name: jaeger
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Wait for jaeger
+  wait_for:
+    port: "{{ jaeger_query_port }}"
+    delay: 5
+    timeout: 60
+
+- name: Cleanup
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/jaeger.tar.gz
+    - "/tmp/jaeger-{{ jaeger_version }}-linux-amd64"

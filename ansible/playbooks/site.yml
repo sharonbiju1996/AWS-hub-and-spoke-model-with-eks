@@ -1,0 +1,19 @@
+---
+# ========================================
+# Deploy All Infrastructure
+# ========================================
+
+# 1. Common on all servers
+- import_playbook: common.yml
+
+# 2. Hub monitoring
+- import_playbook: monitoring.yml
+
+# 3. Vault (Shared)
+- import_playbook: vault.yml
+
+# 4. SonarQube (Shared)
+- import_playbook: sonarqube.yml
+
+# Note: EKS monitoring run separately
+# ansible-playbook playbooks/eks-monitoring-all.yml

@@ -1,0 +1,31 @@
+cluster_name = "{{ vault_cluster_name }}"
+ui = true
+log_level = "info"
+
+listener "tcp" {
+  address         = "0.0.0.0:{{ vault_api_port }}"
+  cluster_address = "0.0.0.0:{{ vault_cluster_port }}"
+  tls_disable     = {{ 'false' if vault_tls_enabled else 'true' }}
+}
+
+storage "dynamodb" {
+  ha_enabled = "true"
+  region     = "{{ aws_region }}"
+  table      = "{{ vault_dynamodb_table }}"
+}
+
+seal "awskms" {
+  region     = "{{ aws_region }}"
+  kms_key_id = "{{ vault_kms_key_id }}"
+}
+
+api_addr     = "http://{{ ansible_host }}:{{ vault_api_port }}"
+cluster_addr = "http://{{ ansible_host }}:{{ vault_cluster_port }}"
+disable_mlock = true
+
+{% if vault_telemetry_enabled %}
+telemetry {
+  prometheus_retention_time = "{{ vault_prometheus_retention }}"
+  disable_hostname = true
+}
+{% endif %}

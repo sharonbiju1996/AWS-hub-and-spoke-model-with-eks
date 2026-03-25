@@ -1,0 +1,380 @@
+trigger:
+- main
+
+pool:
+  name: 'Default'
+
+variables:
+  - group: jc-devops-vars
+
+stages:
+#=====================
+# 1) PLAN HUB
+#=====================
+- stage: terraform_plan_hub
+  displayName: 'Plan Hub'
+  jobs:
+  - job: tf_plan_hub
+    displayName: 'TF Plan Hub'
+    variables:
+      env: 'default-hub'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: AwsCli@1
+      displayName: 'Configure AWS credentials'
+      inputs:
+        awsCredentials: 'aws-devops'
+        regionName: 'us-west-2'
+        awsCommand: 'sts'
+        awsSubCommand: 'get-caller-identity'
+        awsArguments: ''
+        failOnStandardError: true
+
+    - task: AwsCli@1
+      displayName: 'Check S3 state access (hub)'
+      inputs:
+        awsCredentials: 'aws-devops'
+        regionName: 'us-west-2'
+        awsCommand: 's3'
+        awsSubCommand: 'ls'
+        awsArguments: 's3://my-tf-state-bucket-jc12/hub/terraform.tfstate'
+        failOnStandardError: false
+
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: '1.9.8'
+
+    - task: Bash@3
+      displayName: 'Init TF Source (hub)'
+      timeoutInMinutes: 10
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_DEFAULT_REGION: us-west-2
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+        script: |
+          set -ex
+          
+          echo "================================================"
+          echo "STEP 1: Verify AWS credentials"
+          echo "================================================"
+          aws sts get-caller-identity
+          
+          echo "================================================"
+          echo "STEP 2: Clean up old state"
+          echo "================================================"
+          rm -rf .terraform .terraform.lock.hcl
+          
+          echo "================================================"
+          echo "STEP 3: Run terraform init"
+          echo "================================================"
+          terraform init -no-color \
+            -backend-config="bucket=my-tf-state-bucket-jc12" \
+            -backend-config="key=hub/terraform.tfstate" \
+            -backend-config="region=us-west-2" \
+            -backend-config="dynamodb_table=tf-locks"
+          
+          echo "================================================"
+          echo "SUCCESS!"
+          echo "================================================"
+
+    - task: Bash@3
+      displayName: 'Select Workspace (hub)'
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_DEFAULT_REGION: us-west-2
+        ENV: $(env)
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+        script: |
+          set -e
+          terraform workspace select "${ENV}" || terraform workspace new "${ENV}"
+
+    - task: Bash@3
+      displayName: 'Create TF Plan (hub)'
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_DEFAULT_REGION: us-west-2
+        ENV: $(env)
+        TF_VAR_temp_dir: $(Agent.TempDirectory)
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+        script: |
+          terraform plan -out "${ENV}.tfplan" -parallelism=25
+
+    - task: PublishBuildArtifacts@1
+      enabled: true
+      displayName: 'Publish TF Plan'
+      inputs:
+        ArtifactName: '$(env).tfplan'
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/aws/root-hub/$(env).tfplan'
+
+#=====================
+# 2) DEPLOY HUB (STEP 1)
+#=====================
+- stage: deploy_hub
+  dependsOn:
+    - terraform_plan_hub
+  displayName: 'Deploy Hub (Step 1)'
+  jobs:
+  - deployment: tf_deploy_hub
+    displayName: 'TF Deploy Hub'
+    environment: 'jc-infra-deploy'
+    timeoutInMinutes: 120
+    variables:
+      env: 'default-hub'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: AwsCli@1
+            displayName: 'Configure AWS credentials'
+            inputs:
+              awsCredentials: 'aws-devops'
+              regionName: 'us-west-2'
+              awsCommand: 'sts'
+              awsSubCommand: 'get-caller-identity'
+              awsArguments: ''
+              failOnStandardError: true
+
+          - task: AwsCli@1
+            displayName: 'Check S3 state access (hub)'
+            inputs:
+              awsCredentials: 'aws-devops'
+              regionName: 'us-west-2'
+              awsCommand: 's3'
+              awsSubCommand: 'ls'
+              awsArguments: 's3://my-tf-state-bucket-jc12/hub/terraform.tfstate'
+              failOnStandardError: false
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: '1.9.8'
+
+          - task: Bash@3
+            displayName: 'Init TF Source (hub)'
+            timeoutInMinutes: 10
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+              AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+              AWS_DEFAULT_REGION: us-west-2
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+              script: |
+                set -ex
+                
+                export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+                export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+                export AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+                export AWS_DEFAULT_REGION="us-west-2"
+                
+                echo "================================================"
+                echo "STEP 1: Verify AWS credentials"
+                echo "================================================"
+                aws sts get-caller-identity
+                
+                echo "================================================"
+                echo "STEP 2: Clean up old state"
+                echo "================================================"
+                rm -rf .terraform .terraform.lock.hcl
+                
+                echo "================================================"
+                echo "STEP 3: Run terraform init"
+                echo "================================================"
+                terraform init -no-color \
+                  -backend-config="bucket=my-tf-state-bucket-jc12" \
+                  -backend-config="key=hub/terraform.tfstate" \
+                  -backend-config="region=us-west-2" \
+                  -backend-config="dynamodb_table=tf-locks"
+                
+                echo "================================================"
+                echo "SUCCESS!"
+                echo "================================================"
+
+          - task: Bash@3
+            displayName: 'Select Workspace (hub)'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+              AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+              AWS_DEFAULT_REGION: us-west-2
+              ENV: $(env)
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+              script: |
+                set -e
+                
+                export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+                export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+                export AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+                export AWS_DEFAULT_REGION="us-west-2"
+                
+                terraform workspace select "${ENV}" || terraform workspace new "${ENV}"
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download TF Plan'
+            inputs:
+              artifactName: '$(env).tfplan'
+              path: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+
+          - task: Bash@3
+            displayName: 'Run TF Apply (Step 1)'
+            env:
+              AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+              AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+              AWS_SESSION_TOKEN: $(AWS_SESSION_TOKEN)
+              AWS_DEFAULT_REGION: us-west-2
+              ENV: $(env)
+              TF_VAR_temp_dir: $(Agent.TempDirectory)
+            inputs:
+              targetType: 'inline'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-hub'
+              script: |
+                set -ex
+                
+                export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+                export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+                export AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}"
+                export AWS_DEFAULT_REGION="us-west-2"
+                export TF_VAR_temp_dir="${TF_VAR_temp_dir}"
+                
+                terraform apply "${ENV}.tfplan"
+
+          - task: PublishBuildArtifacts@1
+            enabled: true
+            displayName: 'Publish Hub Config'
+            inputs:
+              ArtifactName: '$(env)-configs.json'
+              PathtoPublish: '$(Agent.TempDirectory)/$(env)-configs.json'
+
+#=====================
+# 3) PLAN SPOKES (DEV, UAT, PROD) - STEP 2
+#=====================
+- stage: terraform_plan
+  dependsOn:
+    - deploy_hub
+  displayName: 'Plan Spoke (Step 2: TGW Only)'
+  jobs:
+
+  # DEV SPOKE
+  - job: tf_plan_dev
+    displayName: 'TF Plan Dev'
+    variables:
+      env: 'dev'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: AwsCli@1
+      displayName: 'Configure AWS credentials'
+      inputs:
+        awsCredentials: 'aws-devops'
+        regionName: 'us-west-2'
+        awsCommand: 'sts'
+        awsSubCommand: 'get-caller-identity'
+        awsArguments: ''
+        failOnStandardError: true
+
+    - task: TerraformInstaller@1
+      displayName: 'Install TF Source'
+      inputs:
+        terraformVersion: '1.9.8'
+
+    - task: Bash@3
+      displayName: 'Init TF Source (spoke dev)'
+      timeoutInMinutes: 10
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_DEFAULT_REGION: us-west-2
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-spoke'
+        script: |
+          set -ex
+          
+          echo "================================================"
+          echo "STEP 1: Verify AWS credentials"
+          echo "================================================"
+          aws sts get-caller-identity
+          
+          echo "================================================"
+          echo "STEP 2: Clean up old state"
+          echo "================================================"
+          rm -rf .terraform .terraform.lock.hcl
+          
+          echo "================================================"
+          echo "STEP 3: Run terraform init"
+          echo "================================================"
+          terraform init -no-color \
+            -backend-config="bucket=my-tf-state-bucket-jc12" \
+            -backend-config="key=spoke_terraform.tfstate" \
+            -backend-config="region=us-west-2" \
+            -backend-config="dynamodb_table=tf-locks"
+          
+          echo "================================================"
+          echo "SUCCESS!"
+          echo "================================================"
+
+    - task: Bash@3
+      displayName: 'Select Workspace (spoke dev)'
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_DEFAULT_REGION: us-west-2
+        ENV: $(env)
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-spoke'
+        script: |
+          set -e
+          terraform workspace select "${ENV}" || terraform workspace new "${ENV}"
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Hub Vars'
+      inputs:
+        artifactName: 'default-hub-configs.json'
+        path: '$(System.DefaultWorkingDirectory)/aws/root-spoke'
+
+    - task: Bash@3
+      displayName: 'Create TF Plan (Spoke Dev - Step 2: TGW Only)'
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+        AWS_DEFAULT_REGION: us-west-2
+        ENV: $(env)
+        TF_VAR_temp_dir: $(Agent.TempDirectory)
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/aws/root-spoke'
+        script: |
+          terraform plan \
+            -var="enable_tgw_attachment=true" \
+            -var="enable_eks=true" \
+            -var="enable_ingress_controller=false" \
+            -var="enable_apigw_vpclink=false" \
+            -out "${ENV}-spoke.tfplan" \
+            -parallelism=25
+
+    - task: PublishBuildArtifacts@1
+      enabled: true
+      displayName: 'Publish TF Plan (spoke dev)'
+      inputs:
+        ArtifactName: '$(env)-spoke.tfplan'
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/aws/root-spoke/$(env)-spoke.tfplan'

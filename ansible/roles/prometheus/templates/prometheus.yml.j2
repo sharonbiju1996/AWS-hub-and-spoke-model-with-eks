@@ -1,0 +1,70 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'hub'
+
+alerting:
+  alertmanagers: []
+
+rule_files:
+  - "rules/*.yml"
+
+scrape_configs:
+  # Self
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:{{ prometheus_port }}']
+
+  # Node Exporters (Hub, Shared, Build VPCs)
+{% for target_group in prometheus_node_targets %}
+{% if target_group.targets | length > 0 %}
+  - job_name: '{{ target_group.job_name }}'
+    static_configs:
+      - targets:
+{% for target in target_group.targets %}
+          - '{{ target }}'
+{% endfor %}
+        labels:
+          group: '{{ target_group.job_name }}'
+{% endif %}
+{% endfor %}
+
+  # EKS Node Exporters (Direct scrape)
+{% for eks in prometheus_eks_clusters %}
+{% if eks.nodes | length > 0 %}
+  - job_name: '{{ eks.name }}-nodes'
+    static_configs:
+      - targets:
+{% for node in eks.nodes %}
+          - '{{ node }}:9100'
+{% endfor %}
+        labels:
+          cluster: '{{ eks.name }}'
+          env: '{{ eks.env }}'
+{% endif %}
+{% endfor %}
+
+  # Vault Metrics
+{% if prometheus_vault_targets | length > 0 %}
+  - job_name: 'vault'
+    metrics_path: '/v1/sys/metrics'
+    params:
+      format: ['prometheus']
+    scheme: http
+    static_configs:
+      - targets:
+{% for target in prometheus_vault_targets %}
+          - '{{ target }}'
+{% endfor %}
+{% endif %}
+
+  # Jaeger
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['localhost:14269']
+
+  # Grafana
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['localhost:{{ grafana_port }}']

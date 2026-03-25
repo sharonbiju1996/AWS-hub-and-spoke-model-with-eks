@@ -1,0 +1,18 @@
+---
+- name: Deploy Monitoring Stack (Hub)
+  hosts: role_monitoring
+  become: yes
+  roles:
+    - common
+    - node_exporter
+    - prometheus
+    - jaeger
+    - grafana
+
+  post_tasks:
+    - name: Display URLs
+      debug:
+        msg:
+          - "Prometheus: http://{{ ansible_host }}:{{ prometheus_port }}"
+          - "Jaeger: http://{{ ansible_host }}:{{ jaeger_query_port }}"
+          - "Grafana: http://{{ ansible_host }}:{{ grafana_port }}"

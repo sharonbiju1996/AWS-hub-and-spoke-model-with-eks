@@ -1,0 +1,280 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - root-build/*
+
+variables:
+  - group: jc-devops-vars
+  - name: AWS_REGION
+    value: 'us-west-2'
+  - name: TF_STATE_BUCKET
+    value: 'terraform-state-bucket-jc51'
+  - name: TF_STATE_KEY
+    value: 'spoke/build/terraform.tfstate'
+  - name: TF_LOCK_TABLE
+    value: 'tf-locks'
+
+pool: 'bossy'
+
+stages:
+#=====================
+# 1) PACKER: Build AMI
+#=====================
+- stage: packer_build
+  displayName: 'Build Azure DevOps Agent AMI'
+  jobs:
+  - job: packer_build
+    displayName: 'Packer Build'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - script: |
+        # Install dependencies
+        which unzip || sudo apt-get update && sudo apt-get install -y unzip curl
+        
+        # Install Packer
+        curl -fsSL https://releases.hashicorp.com/packer/1.10.0/packer_1.10.0_linux_amd64.zip -o packer.zip
+        sudo unzip -o packer.zip -d /usr/local/bin
+        packer version
+      displayName: 'Install Packer'
+
+    - task: AWSShellScript@1
+      displayName: 'Packer Init & Build'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: '$(AWS_REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          cd root-build/packer
+          
+          packer init buildagent.pkr.hcl
+          
+          packer build -machine-readable buildagent.pkr.hcl | tee packer_output.txt
+          
+          AMI_ID=$(grep 'artifact,0,id' packer_output.txt | cut -d, -f6 | cut -d: -f2)
+          echo "Built AMI: $AMI_ID"
+          
+          echo "##vso[task.setvariable variable=AMI_ID;isOutput=true]$AMI_ID"
+      name: packer_step
+
+    - script: |
+        echo "$(packer_step.AMI_ID)" > $(Build.ArtifactStagingDirectory)/ami_id.txt
+      displayName: 'Save AMI ID'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish AMI ID'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'packer-output'
+
+#=====================
+# 2) TERRAFORM PLAN
+#=====================
+- stage: terraform_plan
+  displayName: 'Terraform Plan (root-build)'
+  dependsOn: packer_build
+  variables:
+    AMI_ID: $[ stageDependencies.packer_build.packer_build.outputs['packer_step.AMI_ID'] ]
+  jobs:
+  - job: tf_plan
+    displayName: 'Terraform Plan'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: DownloadBuildArtifacts@1
+      displayName: 'Download AMI ID'
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'packer-output'
+        downloadPath: '$(System.DefaultWorkingDirectory)'
+
+    - script: |
+        # Install dependencies
+        which unzip || sudo apt-get update && sudo apt-get install -y unzip curl
+        
+        # Install Terraform
+        curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+        sudo unzip -o terraform.zip -d /usr/local/bin
+        terraform version
+      displayName: 'Install Terraform'
+
+    - task: AWSShellScript@1
+      displayName: 'Terraform Init & Plan'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: '$(AWS_REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          cd root-build
+          
+          AMI_ID=$(cat $(System.DefaultWorkingDirectory)/packer-output/ami_id.txt)
+          echo "Using AMI: $AMI_ID"
+          
+          terraform init \
+            -backend-config="bucket=$(TF_STATE_BUCKET)" \
+            -backend-config="key=$(TF_STATE_KEY)" \
+            -backend-config="region=$(AWS_REGION)" \
+            -backend-config="dynamodb_table=$(TF_LOCK_TABLE)"
+          
+          terraform plan \
+            -var="azdo_agent_ami_id=$AMI_ID" \
+            -out=tfplan \
+            -parallelism=25
+          
+          cp tfplan $(Build.ArtifactStagingDirectory)/
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish TF Plan'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'terraform-plan'
+
+#=====================
+# 3) TERRAFORM APPLY
+#=====================
+- stage: terraform_apply
+  displayName: 'Terraform Apply (root-build)'
+  dependsOn: terraform_plan
+  jobs:
+  - deployment: tf_deploy
+    displayName: 'Terraform Deploy'
+    environment: 'jc-build-infra'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: DownloadBuildArtifacts@1
+            displayName: 'Download TF Plan'
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'terraform-plan'
+              downloadPath: '$(System.DefaultWorkingDirectory)'
+
+          - script: |
+              # Install dependencies
+              which unzip || sudo apt-get update && sudo apt-get install -y unzip curl
+              
+              # Install Terraform
+              curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+              sudo unzip -o terraform.zip -d /usr/local/bin
+              terraform version
+            displayName: 'Install Terraform'
+
+          - task: AWSShellScript@1
+            displayName: 'Terraform Apply'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: '$(AWS_REGION)'
+              scriptType: 'inline'
+              inlineScript: |
+                cd root-build
+                
+                terraform init \
+                  -backend-config="bucket=$(TF_STATE_BUCKET)" \
+                  -backend-config="key=$(TF_STATE_KEY)" \
+                  -backend-config="region=$(AWS_REGION)" \
+                  -backend-config="dynamodb_table=$(TF_LOCK_TABLE)"
+                
+                cp $(System.DefaultWorkingDirectory)/terraform-plan/tfplan .
+                
+                terraform apply -auto-approve tfplan
+
+          - task: AWSShellScript@1
+            displayName: 'Get Agent Status'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: '$(AWS_REGION)'
+              scriptType: 'inline'
+              inlineScript: |
+                cd root-build
+                echo "=== Azure DevOps Agent ASG Created ==="
+                terraform output -json | jq '.'
+
+#=====================
+# 4) ANSIBLE COMMON SETUP
+#=====================
+- stage: ansible_common
+  displayName: 'Ansible Common Setup (Build Agents)'
+  dependsOn: terraform_apply
+  jobs:
+  - deployment: ansible_common_setup
+    displayName: 'Ansible Configure Build Agents'
+    environment: 'jc-build-infra'
+    timeoutInMinutes: 60
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+
+          - task: AWSShellScript@1
+            displayName: 'Ansible - Run Common Playbook (SSM)'
+            inputs:
+              awsCredentials: 'aws-devops-connection'
+              regionName: '$(AWS_REGION)'
+              scriptType: 'inline'
+              inlineScript: |
+                set -ex
+                
+                # Install dependencies
+                sudo apt-get update
+                sudo apt-get remove -y ansible || true
+                sudo apt-get install -y python3-pip unzip curl
+                
+                # Install Ansible via pip
+                pip3 install --upgrade ansible-core ansible --break-system-packages
+                export PATH="$HOME/.local/bin:$PATH"
+                
+                ansible --version
+                
+                # Install boto3 for AWS dynamic inventory and SSM
+                pip3 install boto3 botocore --break-system-packages
+                
+                # Install AWS SSM Session Manager Plugin
+                curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+                sudo dpkg -i session-manager-plugin.deb
+                session-manager-plugin --version
+                
+                # Install Ansible AWS collection
+                ansible-galaxy collection install amazon.aws:==7.0.0 community.general:==8.0.0 --force
+                
+                # Go to ansible directory
+                cd $(System.DefaultWorkingDirectory)/ansible
+                
+                # Fix ansible.cfg callback plugin issue
+                if [ -f "ansible.cfg" ]; then
+                  sed -i 's/stdout_callback.*=.*yaml/stdout_callback = default/g' ansible.cfg
+                  sed -i 's/stdout_callback.*=.*community.general.yaml/stdout_callback = default/g' ansible.cfg
+                fi
+                
+                # Install requirements if exists
+                if [ -f "requirements.yml" ]; then
+                  ansible-galaxy install -r requirements.yml --force
+                fi
+                
+                # Wait for instances to be SSM-ready
+                echo "Waiting 90s for ASG instances and SSM agent registration..."
+                sleep 90
+                
+                # Verify inventory
+                echo "Testing AWS EC2 dynamic inventory..."
+                ansible-inventory -i inventory/aws_ec2.yml --graph || echo "Inventory check failed, continuing..."
+                
+                # Run common playbook for build agents
+                echo "Running common playbook for build agents..."
+                ANSIBLE_STDOUT_CALLBACK=default ansible-playbook \
+                  -i inventory/aws_ec2.yml \
+                  playbooks/common.yml \
+                  -e "target_group=tag_Role_azdo_agent" \
+                  -v

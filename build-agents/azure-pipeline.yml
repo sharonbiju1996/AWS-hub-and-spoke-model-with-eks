@@ -1,0 +1,155 @@
+trigger:
+- main
+
+variables:
+  - group: jc-devops-vars   # can still store shared vars here (AWS creds not needed if using service connection)
+
+
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+#=====================
+# 1) PACKER: build AMI on AWS
+#=====================
+- stage: packer_init
+  displayName: 'Build AWS AMI'
+  jobs:
+  - job: packer_init
+    displayName: 'Packer Build Image'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    # Configure AWS credentials from service connection
+    - task: AwsCli@1
+      displayName: 'Configure AWS credentials'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: 'us-east-1'
+        command: 'sts'
+        arguments: 'get-caller-identity'
+        failOnStandardError: true
+
+    # Run Packer (assumes you have an AWS builder in your HCL)
+    - script: |
+        packer init buildagent.pkr.hcl
+      displayName: 'Packer init'
+      workingDirectory: 'buildagent/packer'
+
+    - script: |
+        packer build buildagent.pkr.hcl
+      displayName: 'Build AMI'
+      workingDirectory: 'buildagent/packer'
+
+#=====================
+# 2) TERRAFORM PLAN (AWS)
+#=====================
+- stage: terraform_plan
+  displayName: 'Plan Buildagent (AWS)'
+  dependsOn:
+  - packer_init
+  jobs:
+  - job: tf_plan
+    displayName: 'TF Plan (AWS)'
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - task: AwsCli@1
+      displayName: 'Configure AWS credentials'
+      inputs:
+        awsCredentials: 'aws-devops-connection'
+        regionName: 'ap-south-1'
+        command: 'sts'
+        arguments: 'get-caller-identity'
+        failOnStandardError: true
+
+    # Install Terraform manually (instead of TerraformTask@5 which is AzureRM-focused)
+    - script: |
+        curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+        sudo unzip terraform.zip -d /usr/local/bin
+
+        terraform -version
+      displayName: 'Install Terraform CLI'
+
+    # Terraform init with S3 backend
+    - script: |
+        cd jc-buildagent
+        terraform init \
+          -backend-config="bucket=my-tf-state-bucket-jc" \
+          -backend-config="key=buildagents/terraform.tfstate" \
+          -backend-config="region='ap-south-1'" \
+          -backend-config="dynamodb_table=tf-locks"
+      displayName: 'Terraform init (AWS backend)'
+
+    # Terraform plan (example var image from Packer output)
+    - script: |
+        cd jc-buildagent
+        terraform plan \
+          -var "image=jc-common-vm-image-$(Build.BuildNumber)" \
+          -out buildagent-tfplan \
+          -parallelism=25
+      displayName: 'Terraform plan (AWS)'
+
+    - task: PublishBuildArtifacts@1
+      enabled: true
+      displayName: 'Publish TF Plan'
+      inputs:
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/00-jc-buildagent/buildagent-tfplan'
+        ArtifactName: 'buildagent-tfplan'
+
+#=====================
+# 3) TERRAFORM APPLY (AWS)
+#=====================
+- stage: deploy_tf
+  dependsOn:
+    - terraform_plan
+  displayName: 'Deploy Buildagent (AWS)'
+  jobs:
+  - deployment: tf_deploy
+    displayName: 'TF Deploy (AWS)'
+    environment: 'jc-infra-deploy'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+              persistCredentials: true
+
+            - task: AwsCli@1
+              displayName: 'Configure AWS credentials'
+              inputs:
+                awsCredentials: 'aws-devops-connection'
+                regionName: 'ap-south-1'
+                command: 'sts'
+                arguments: 'get-caller-identity'
+                failOnStandardError: true
+
+            - script: |
+                curl -fsSL https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip
+                sudo unzip terraform.zip -d /usr/local/bin
+                terraform -version
+              displayName: 'Install Terraform CLI'
+  
+            - script: |
+                cd buildagent
+                terraform init \
+                  -backend-config="bucket=my-tf-state-bucket" \
+                  -backend-config="key=buildagents/buildagent.tfstate" \
+                  -backend-config="region=us-east-1" \
+                  -backend-config="dynamodb_table=tf-locks"
+              displayName: 'Terraform init (AWS backend)'
+
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download TF Plan'
+              inputs:
+                artifactName: 'buildagent-tfplan'
+                path: '$(System.DefaultWorkingDirectory)/00-jc-buildagent'
+
+            - script: |
+                cd buildagent
+                terraform apply "buildagent-tfplan"
+              displayName: 'Terraform apply (AWS)'
+

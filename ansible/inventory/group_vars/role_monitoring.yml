@@ -1,0 +1,86 @@
+---
+# ========================================
+# Prometheus (Hub - Central)
+# ========================================
+prometheus_version: "2.48.0"
+prometheus_user: "prometheus"
+prometheus_group: "prometheus"
+prometheus_port: 9090
+prometheus_retention: "30d"
+prometheus_config_dir: "/etc/prometheus"
+prometheus_data_dir: "/var/lib/prometheus"
+
+# Node Exporter targets (Non-EKS)
+prometheus_node_targets:
+  - job_name: "hub-nodes"
+    targets:
+      - "localhost:9100"
+  - job_name: "vault-nodes"
+    targets:
+      - "10.62.8.77:9100"
+      - "10.62.25.175:9100"
+  - job_name: "sonarqube-nodes"
+    targets:
+      - "10.62.36.165:9100"
+  - job_name: "build-nodes"
+    targets: []
+      # - "10.63.x.x:9100"
+
+# EKS Clusters (Direct node scraping)
+prometheus_eks_clusters:
+  - name: "eks-dev"
+    env: "dev"
+    nodes:
+      - "10.59.40.149"
+      - "10.59.77.253"
+  - name: "eks-staging"
+    env: "staging"
+    nodes: []
+      # - "10.60.x.x"
+  - name: "eks-prod"
+    env: "prod"
+    nodes: []
+      # - "10.61.x.x"
+
+# Vault metrics endpoints
+prometheus_vault_targets:
+  - "10.62.8.77:8200"
+  - "10.62.25.175:8200"
+
+# ========================================
+# Jaeger (Hub - Central)
+# ========================================
+jaeger_version: "1.53.0"
+jaeger_user: "jaeger"
+jaeger_group: "jaeger"
+jaeger_data_dir: "/var/lib/jaeger"
+jaeger_collector_http_port: 14268
+jaeger_collector_grpc_port: 14250
+jaeger_query_port: 16686
+jaeger_agent_port: 6831
+jaeger_otlp_grpc_port: 4317
+jaeger_otlp_http_port: 4318
+jaeger_storage_type: "memory"
+jaeger_badger_dir: "/var/lib/jaeger/badger"
+
+# ========================================
+# Grafana (Hub)
+# ========================================
+grafana_version: "10.2.3"
+grafana_user: "grafana"
+grafana_group: "grafana"
+grafana_port: 3000
+grafana_data_dir: "/var/lib/grafana"
+grafana_config_dir: "/etc/grafana"
+grafana_log_dir: "/var/log/grafana"
+grafana_admin_user: "admin"
+grafana_admin_password: "ChangeMe123!"
+
+grafana_datasources:
+  - name: "Prometheus"
+    type: "prometheus"
+    url: "http://localhost:9090"
+    isDefault: true
+  - name: "Jaeger"
+    type: "jaeger"
+    url: "http://localhost:16686"

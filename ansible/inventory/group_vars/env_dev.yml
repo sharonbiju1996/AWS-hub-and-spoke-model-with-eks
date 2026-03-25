@@ -1,0 +1,20 @@
+---
+# ========================================
+# Dev Environment
+# ========================================
+eks_cluster_name: "jc-dev-eks"
+eks_environment: "dev"
+prometheus_federation_name: "eks-dev"
+
+# Jaeger endpoints (Hub)
+jaeger_collector_endpoint: "{{ jaeger_hub_ip }}:14250"
+jaeger_otlp_endpoint: "{{ jaeger_hub_ip }}:4317"
+
+# Sampling - 100% in dev
+otel_sampling_rate: 1.0
+
+# Resources - smaller in dev
+prometheus_memory_request: "256Mi"
+prometheus_memory_limit: "1Gi"
+prometheus_cpu_request: "100m"
+prometheus_cpu_limit: "500m"

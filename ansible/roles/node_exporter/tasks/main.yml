@@ -1,0 +1,57 @@
+---
+- name: Create node_exporter user
+  user:
+    name: node_exporter
+    system: yes
+    shell: /bin/false
+    create_home: no
+
+- name: Check if node_exporter exists
+  stat:
+    path: /usr/local/bin/node_exporter
+  register: node_exporter_binary
+
+- name: Download node_exporter
+  get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    dest: /tmp/node_exporter.tar.gz
+  when: not node_exporter_binary.stat.exists
+
+- name: Extract node_exporter
+  unarchive:
+    src: /tmp/node_exporter.tar.gz
+    dest: /tmp
+    remote_src: yes
+  when: not node_exporter_binary.stat.exists
+
+- name: Install node_exporter
+  copy:
+    src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    remote_src: yes
+    mode: '0755'
+  when: not node_exporter_binary.stat.exists
+  notify: restart node_exporter
+
+- name: Create systemd service
+  template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+  notify:
+    - reload systemd
+    - restart node_exporter
+
+- name: Start node_exporter
+  systemd:
+    name: node_exporter
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Cleanup
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/node_exporter.tar.gz
+    - "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64"

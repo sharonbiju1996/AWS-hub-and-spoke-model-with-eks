@@ -1,0 +1,76 @@
+---
+- name: Initialize Vault with KMS Auto-Unseal
+  hosts: role_vault[0]
+  become: yes
+
+  vars:
+    vault_addr: "http://127.0.0.1:8200"
+
+  tasks:
+    - name: Check if Vault is initialized
+      shell: "VAULT_ADDR={{ vault_addr }} vault status -format=json"
+      register: vault_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display raw status
+      debug:
+        var: vault_status.stdout
+
+    - name: Initialize Vault with KMS (no unseal keys needed)
+      shell: "VAULT_ADDR={{ vault_addr }} vault operator init -format=json -recovery-shares=5 -recovery-threshold=3"
+      register: vault_init
+      when: "'\"initialized\":false' in vault_status.stdout or vault_status.rc != 0"
+
+    - name: Save recovery keys to file
+      copy:
+        content: "{{ vault_init.stdout }}"
+        dest: /root/vault-init-keys.json
+        mode: '0600'
+      when: vault_init is changed
+
+    - name: Display initialization output - SAVE THESE RECOVERY KEYS
+      debug:
+        msg: |
+          ============================================
+          VAULT INITIALIZED WITH KMS AUTO-UNSEAL
+          SAVE THESE RECOVERY KEYS SECURELY!
+          ============================================
+          {{ vault_init.stdout }}
+          ============================================
+      when: vault_init is changed
+
+    - name: Wait for Vault to auto-unseal
+      pause:
+        seconds: 10
+      when: vault_init is changed
+
+    - name: Check final status
+      shell: "VAULT_ADDR={{ vault_addr }} vault status"
+      register: final_status
+      changed_when: false
+
+    - name: Display final status
+      debug:
+        var: final_status.stdout_lines
+
+- name: Verify Other Nodes
+  hosts: role_vault[1:]
+  become: yes
+
+  vars:
+    vault_addr: "http://127.0.0.1:8200"
+
+  tasks:
+    - name: Wait for cluster sync
+      pause:
+        seconds: 5
+
+    - name: Check node status
+      shell: "VAULT_ADDR={{ vault_addr }} vault status"
+      register: final_status
+      changed_when: false
+
+    - name: Display status
+      debug:
+        var: final_status.stdout_lines

@@ -1,0 +1,17 @@
+[Unit]
+Description=HashiCorp Vault
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ vault_user }}
+Group={{ vault_group }}
+ExecStart=/usr/local/bin/vault server -config={{ vault_config_dir }}/vault.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

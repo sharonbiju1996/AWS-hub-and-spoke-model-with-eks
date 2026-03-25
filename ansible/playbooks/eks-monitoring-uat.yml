@@ -1,0 +1,11 @@
+---
+- name: Deploy EKS Monitoring (UAT)
+  hosts: role_eks:&env_uat
+  become: yes
+  roles:
+    - eks_monitoring
+
+  post_tasks:
+    - name: Display info
+      debug:
+        msg: "EKS UAT monitoring deployed - Traces going to {{ jaeger_collector_endpoint }}"
